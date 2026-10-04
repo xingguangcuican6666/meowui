@@ -1,0 +1,10 @@
+# Dependencies: `npm install` restores these; the entry never sees them.
+node_modules/
+
+# The access token is minted per machine and must never be shared. It is written
+# beside the launcher at runtime, which in a source checkout is this directory.
+.meowui-token
+
+# The two bundles and the stylesheet are build output — and deliberately NOT
+# ignored. `meowcode entry install <dir>` ships whatever files the manifest
+# names, so a checkout has to be installable without a build step first.

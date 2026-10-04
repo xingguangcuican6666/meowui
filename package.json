@@ -1,0 +1,55 @@
+{
+  "name": "meowui-web",
+  "version": "0.1.0",
+  "description": "A VS Code-style workbench for MeowCode, shipped as an entry plugin",
+  "license": "AGPL-3.0-or-later",
+  "keywords": [
+    "meowcode",
+    "meowcode-entry",
+    "vscode",
+    "monaco",
+    "workbench",
+    "ide"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xingguangcuican6666/meowui.git"
+  },
+  "homepage": "https://github.com/xingguangcuican6666/meowui#readme",
+  "bugs": {
+    "url": "https://github.com/xingguangcuican6666/meowui/issues"
+  },
+  "type": "module",
+  "main": "launcher.js",
+  "meowcode": {
+    "entry": {
+      "name": "meowui",
+      "description": "A VS Code-style web workbench for the same agent",
+      "settings": {
+        "effort": "medium"
+      },
+      "permissions": {
+        "deny": [
+          "Bash(rm -rf /*)"
+        ]
+      },
+      "launcher": {
+        "command": "node",
+        "args": [
+          "launcher.js",
+          "webui.js",
+          "webui.css"
+        ],
+        "cwd": "."
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node tools/simulate.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "monaco-editor": "^0.57.0"
+  }
+}
