@@ -433,6 +433,30 @@ body {
   gap: 8px;
   color: var(--vscode-descriptionForeground);
 }
+/* The boot error box. Its markup comes from the shell's inline script, which runs
+ * before — and independently of — this stylesheet, so the two must agree on the
+ * class name without either being able to check: if the bundle 401s, this file is
+ * not there either, and a styled-but-empty box is as blank as no box at all. So the
+ * colours are literals, not custom properties, and the box survives on its own. */
+.boot-error {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: #cccccc;
+  background: #1f1f1f;
+  font-family: var(--vscode-font-family);
+}
+.boot-error .head { font-size: 15px; color: #f85149; }
+.boot-error .why { font-family: var(--vscode-editor-font-family); font-size: 12px; }
+.boot-error .hint { max-width: 34em; font-size: 12px; color: #9d9d9d; }
+:root[data-theme="light"] .boot-error { color: #3b3b3b; background: #ffffff; }
+:root[data-theme="light"] .boot-error .hint { color: #3b3b3b99; }
+
 .empty-editor .keys { font-size: 12px; }
 .empty-editor kbd {
   padding: 1px 5px;

@@ -132,19 +132,91 @@ export function createHttpApi({ port, token, cwd, entryDir, rpc, bundle, css }) 
   }
 
   // ---- the shell -----------------------------------------------------------
-
+  //
+  // Two things live in this markup that are worth reading before changing either.
+  //
+  // The token rides on the two subresource URLs, and it has to. The shell is reached
+  // with ?t= in the query string, but a browser requests a link or script element
+  // from its href or src alone: a page's query string is not inherited by the
+  // resources it references, and no cookie is sent because none is ever set. So
+  // without the token below, the shell loads, both assets 401, and the browser shows
+  // a blank page with an empty #root — silently, because a script that 401s never
+  // runs. Nothing appears in the console. That is the whole failure, and it is
+  // invisible to any client that adds the token itself, which is exactly why the
+  // simulator's own requests passed for as long as they did.
+  //
+  // Reaching this line means authorized() already accepted a token, so embedding
+  // the server's own copy in the markup discloses nothing the visitor did not just
+  // present. A cookie reads tidier and is tempting because it is one line — but
+  // cookies are per-host and *not* per-port, so two workbenches side by side on
+  // MEOWUI_PORT would overwrite each other's cookie and break one of them with the
+  // same blank page. The query string stays the single mechanism, which is what
+  // every other route here already uses.
+  //
+  // And nothing between the backticks may contain a backtick of its own: this is a
+  // template literal, so one ends the string in the middle of an HTML document —
+  // which esbuild then reports as a JavaScript parse error about a tag, a long way
+  // from the character that caused it. That is why the comments below say "script
+  // element" instead of quoting one.
   const PAGE = `<!doctype html>
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>meowui</title>
-<link rel="stylesheet" href="/${css}">
+<link rel="stylesheet" href="/${css}?t=${encodeURIComponent(token)}">
 </head>
 <body>
 <div id="root"></div>
-<script>window.MEOWUI_TOKEN = new URLSearchParams(location.search).get('t') || ''</script>
-<script src="/${bundle}"></script>
+<script>
+// The only part of the front-end that does not need the bundle to exist, which is
+// precisely why the boot watchdog is here rather than in webui.js.
+//
+// A 401 on the bundle is silent: a script element that errors out never runs, so
+// the console says nothing and #root stays empty. Three ways that can happen, and
+// each needs its own trigger:
+//
+//   - never fetched      -> the script element's onerror attribute, below
+//   - fetched, throws
+//     while evaluating   -> window's error event, which an uncaught exception in a
+//                            classic script always reaches
+//   - fetched, hangs     -> only a timer can see this one
+//
+// The timer is generous because a cold 4.7 MB parse on a busy machine is slow,
+// not broken.
+//
+// Note what the bundle's own __meowuiBooted flag cannot do: an ES module's imports
+// are all evaluated before its first statement, so main.mjs cannot set that flag
+// until Monaco has finished loading. A Monaco that throws is therefore invisible to
+// the flag and is caught by the error listener instead.
+(function () {
+  var root = document.getElementById('root')
+  window.MEOWUI_TOKEN = new URLSearchParams(location.search).get('t') || ''
+  var timer = setTimeout(function () { fail('webui.js never finished loading') }, 8000)
+  function fail(why) {
+    if (window.__meowuiBooted) return
+    clearTimeout(timer)
+    var box = document.createElement('div')
+    box.className = 'boot-error'
+    var head = document.createElement('div')
+    head.className = 'head'
+    head.textContent = 'the workbench did not start'
+    var reason = document.createElement('div')
+    reason.className = 'why'
+    reason.textContent = why
+    var hint = document.createElement('div')
+    hint.className = 'hint'
+    hint.textContent = 'Open the exact URL MeowCode printed, token and all — a bare 127.0.0.1 address is not enough.'
+    box.append(head, reason, hint)
+    root.replaceChildren(box)
+  }
+  window.__meowuiFail = fail
+  window.addEventListener('error', function (e) {
+    fail('webui.js failed while loading: ' + (e.message || 'an unknown error'))
+  })
+})();
+</script>
+<script src="/${bundle}?t=${encodeURIComponent(token)}" onerror="window.__meowuiFail &amp;&amp; window.__meowuiFail('webui.js could not be loaded — the server answered with an error')"></script>
 </body>
 </html>`
 

@@ -19,6 +19,7 @@ import fsp from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -351,6 +352,127 @@ async function main() {
   })
   check('webui.css is served as css', css.status === 200 && /text\/css/.test(css.type ?? ''), `${css.status} ${css.type}`)
   check('the stylesheet carries the VS Code design tokens', css.body.includes('--vscode-sideBar-background'))
+
+  // ---- the shell's markup ------------------------------------------------
+  //
+  // This is the blank-page test, and it is here because a client that adds the
+  // token itself can never see the bug: every other check in this file passes the
+  // token by hand, so it cannot tell a correct URL from one the *browser* could not
+  // have produced. A page's query string is not inherited by the `<link>` and
+  // `<script>` it references, so those two URLs must carry the token themselves or
+  // the browser gets a 401 for both — silently, because a script that 401s never
+  // runs and says nothing in the console. The report was "a blank page, nothing at
+  // all", and that is exactly this.
+  section("the shell's own assets")
+  const page = await client.get('/')
+  check('the shell page is served to an authorized visitor', page.status === 200, `status ${page.status}`)
+  const scriptSrc = /\ssrc="(\/[^"]+)"/.exec(page.body)?.[1]
+  const styleHref = /\shref="(\/[^"]+)"/.exec(page.body)?.[1]
+  check('the markup points the bundle at an absolute path', Boolean(scriptSrc?.startsWith('/')), String(scriptSrc))
+  check('the bundle reference carries the token',
+    new URL(scriptSrc, BASE).searchParams.get('t') === token, String(scriptSrc))
+  check('the stylesheet reference carries the token',
+    new URL(styleHref, BASE).searchParams.get('t') === token, String(styleHref))
+
+  // Requested exactly as the markup spells them, with no token added by this
+  // client. If the markup is right these are 200; if it regresses they are 401,
+  // which *is* the blank page.
+  const asWritten = (ref) => new Promise((resolve) => {
+    http.get(new URL(ref, BASE), (res) => { res.resume(); resolve(res.statusCode) })
+  })
+  const bundleStatus = await asWritten(scriptSrc)
+  const cssStatus = await asWritten(styleHref)
+  check('the bundle loads with no token added by the client', bundleStatus === 200, `${scriptSrc} -> ${bundleStatus}`)
+  check('the stylesheet loads with no token added by the client', cssStatus === 200, `${styleHref} -> ${cssStatus}`)
+
+  // And the reverse, so the token in the markup is not a way to hand it out: the
+  // markup is only reachable *after* `authorized` accepted a token to begin with.
+  const wrongToken = await new Promise((resolve) => {
+    const url = new URL('/', BASE)
+    url.searchParams.set('t', 'x'.repeat(token.length))
+    http.get(url, (res) => { res.resume(); resolve(res.statusCode) })
+  })
+  check('a wrong token still gets no shell, so there is no markup to leak one', wrongToken === 401, `status ${wrongToken}`)
+
+  // ---- the boot watchdog ------------------------------------------------
+  //
+  // A blank page is the failure nobody can diagnose from what they see, so the one
+  // guarantee this makes is that it cannot happen *silently*. The watchdog is the
+  // shell's own inline script — it has to run the shell's own script, in a DOM
+  // without a browser, because that is the whole point: it cannot depend on the
+  // bundle it is watching for.
+  const inline = /<script>([\s\S]*?)<\/script>/.exec(page.body)?.[1]
+  check('the shell carries an inline watchdog', Boolean(inline?.includes('__meowuiFail')), `${inline?.length ?? 0} chars`)
+  // Where the bundle sets its "I am up" flag. Not a line number — the bundle is
+  // minified, so lines measure esbuild's line breaks rather than execution order.
+  // What matters is that it comes *after* the workbench is visibly up: the flag
+  // silences the watchdog, so setting it too early turns a later failure into a
+  // silent blank page all over again.
+  const bootedAt = bundle.body.indexOf('__meowuiBooted=!0')
+  const loadDirAt = bundle.body.indexOf('.editor-host')
+  check('the bundle sets the booted flag after the editor pane exists',
+    bootedAt > 0 && loadDirAt > 0 && bootedAt > loadDirAt,
+    `booted at ${bootedAt}, .editor-host at ${loadDirAt}`)
+  check('the bundle sets it exactly once — a second assignment would re-open the window',
+    (bundle.body.match(/__meowuiBooted=!0/g) ?? []).length === 1,
+    `${(bundle.body.match(/__meowuiBooted=!0/g) ?? []).length} assignments`)
+
+  // A document good enough for the watchdog: it only ever touches getElementById,
+  // createElement, append, replaceChildren, textContent, setTimeout and
+  // addEventListener. The listeners are kept so the error path can be exercised
+  // without a browser to fire them.
+  const runShell = (bundleError) => {
+    const root_ = { children: null, replaceChildren(...kids) { this.children = kids } }
+    const listeners = {}
+    const sandbox = {
+      URLSearchParams,
+      setTimeout,
+      clearTimeout,
+      addEventListener: (type, fn) => { (listeners[type] ??= []).push(fn) },
+      document: {
+        getElementById: (id) => (id === 'root' ? root_ : null),
+        createElement: () => ({
+          children: [],
+          append(...k) { this.children.push(...k) },
+          textContent: '',
+          className: '',
+        }),
+      },
+    }
+    sandbox.window = sandbox
+    sandbox.location = { search: `?t=${token}` }
+    vm.runInNewContext(inline, sandbox)
+    if (bundleError === 'error') sandbox.window.__meowuiFail('webui.js could not be loaded — the server answered with an error')
+    return { sandbox, root_, listeners }
+  }
+
+  const broke = runShell('error')
+  const shown = broke.root_.children?.[0]
+  check('a bundle that 401s now says so instead of showing nothing',
+    Boolean(shown), 'the root stayed empty — the silent blank page is still possible')
+  check('the message names the bundle, not just "an error"',
+    shown?.children?.some((c) => /webui\.js/.test(c.textContent)), JSON.stringify(shown?.children?.map((c) => c.textContent)))
+  check('the box is classed for the stylesheet to find', shown?.className === 'boot-error', String(shown?.className))
+
+  // The watchdog also listens for `error`, because the bundle's own booted flag
+  // cannot cover the case it looks like it covers: an ES module evaluates every
+  // import before its first statement, so nothing in main.mjs runs — booted flag
+  // included — until Monaco has loaded. A Monaco that throws is invisible to the
+  // flag and only ever reaches this listener, since an uncaught exception in a
+  // classic script always fires `error` on window.
+  const threw = runShell(null)
+  threw.listeners.error.forEach((fn) => fn({ message: 'Monaco is not defined' }))
+  check('a bundle that throws while loading is caught, not left silent',
+    /Monaco is not defined/.test(threw.root_.children?.[0]?.children?.find((c) => c.className === 'why')?.textContent ?? ''),
+    JSON.stringify(threw.root_.children?.[0]?.children?.map((c) => c.textContent)))
+
+  // The other direction: a bundle that arrives and evaluates must silence the box,
+  // or the watchdog would overwrite a working workbench eight seconds in.
+  const booted = runShell(null)
+  booted.sandbox.window.__meowuiBooted = true
+  booted.sandbox.window.__meowuiFail('too late')
+  check('an evaluated bundle silences the watchdog',
+    !booted.root_.children, JSON.stringify(booted.root_.children))
 
   // ---- workspace ------------------------------------------------------
   section('the workspace api')

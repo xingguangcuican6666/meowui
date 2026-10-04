@@ -13,9 +13,9 @@ Three files go into the entry directory, and that is the whole runtime:
 
 | file | what it is | size |
 |---|---|---|
-| `launcher.js` | the host side — RPC client, HTTP/SSE server, workspace file API — bundled by `build.mjs` | 19 KB |
+| `launcher.js` | the host side — RPC client, HTTP/SSE server, workspace file API — bundled by `build.mjs` | 22 KB |
 | `webui.js` | the front-end — Monaco inlined, workers inlined, no framework | 4.7 MB (1.3 MB gzipped) |
-| `webui.css` | the VS Code design language, as CSS custom properties | 25 KB |
+| `webui.css` | the VS Code design language, as CSS custom properties | 26 KB |
 
 No `node_modules` beside them, no loader runtime, no bundler config the user has
 to know about. `npm run build` regenerates the two bundles; `npm test` drives the
@@ -94,6 +94,12 @@ read the workspace can also drive the agent. So:
 
 - every request carries `?t=`, the `meowui_token` cookie, or
   `Authorization: Bearer` — the static bundle included;
+- the shell embeds the token on its two subresource URLs, because a page's query
+  string is not inherited by the `<link>` and `<script>` it references. This is
+  also the one thing a blank page can teach you: a script that 401s never runs, so
+  the browser says nothing at all. The shell therefore carries a boot watchdog —
+  the one part of the front-end that does not need the bundle — which says what
+  went wrong instead of leaving an empty `#root`;
 - the token is 32 random bytes, stored `0600` beside the entry;
 - every `/api/fs/*` path is resolved and checked for containment in the session
   root, and **symlinks are refused** rather than followed;
@@ -132,11 +138,20 @@ stdin/stdout. Two facts that are easy to get backwards, both measured:
 
 ## Testing without a browser
 
-`tools/simulate.mjs` is 43 checks over the plugin's own HTTP surface — the same
-routes, token, SSE frames a browser would use — with the MeowCode side of the
-pipe faked. It imports nothing from meowcode's source, on purpose: a test that
+`tools/simulate.mjs` is 62 checks over the plugin's own HTTP surface — the same
+routes, token, SSE frames a browser would use — with the MeowCode side of the pipe
+faked. It imports nothing from meowcode's source, on purpose: a test that
 reached into the host's internals would be testing the host, and the thing worth
 testing here is the boundary.
+
+That constraint has one sharp edge worth stating, because it is where the blank
+page came from: the simulator adds the token to every request it makes, so it
+cannot tell a correct URL from one the *browser* could not have produced. A client
+that supplies its own credentials proves nothing about what a browser ends up
+fetching. So the markup's own URLs are requested verbatim, with nothing added —
+and the shell's inline watchdog is executed in a `node:vm` sandbox, because a
+watchdog that cannot be tested without a browser is a watchdog that silently stops
+working.
 
 The event shapes it replays are the real ones, so a front-end that renders them
 wrongly fails here rather than in front of a user. And because the host side of

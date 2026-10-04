@@ -341,12 +341,59 @@ data: ${JSON.stringify(event)}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>meowui</title>
-<link rel="stylesheet" href="/${css}">
+<link rel="stylesheet" href="/${css}?t=${encodeURIComponent(token2)}">
 </head>
 <body>
 <div id="root"></div>
-<script>window.MEOWUI_TOKEN = new URLSearchParams(location.search).get('t') || ''</script>
-<script src="/${bundle}"></script>
+<script>
+// The only part of the front-end that does not need the bundle to exist, which is
+// precisely why the boot watchdog is here rather than in webui.js.
+//
+// A 401 on the bundle is silent: a script element that errors out never runs, so
+// the console says nothing and #root stays empty. Three ways that can happen, and
+// each needs its own trigger:
+//
+//   - never fetched      -> the script element's onerror attribute, below
+//   - fetched, throws
+//     while evaluating   -> window's error event, which an uncaught exception in a
+//                            classic script always reaches
+//   - fetched, hangs     -> only a timer can see this one
+//
+// The timer is generous because a cold 4.7 MB parse on a busy machine is slow,
+// not broken.
+//
+// Note what the bundle's own __meowuiBooted flag cannot do: an ES module's imports
+// are all evaluated before its first statement, so main.mjs cannot set that flag
+// until Monaco has finished loading. A Monaco that throws is therefore invisible to
+// the flag and is caught by the error listener instead.
+(function () {
+  var root = document.getElementById('root')
+  window.MEOWUI_TOKEN = new URLSearchParams(location.search).get('t') || ''
+  var timer = setTimeout(function () { fail('webui.js never finished loading') }, 8000)
+  function fail(why) {
+    if (window.__meowuiBooted) return
+    clearTimeout(timer)
+    var box = document.createElement('div')
+    box.className = 'boot-error'
+    var head = document.createElement('div')
+    head.className = 'head'
+    head.textContent = 'the workbench did not start'
+    var reason = document.createElement('div')
+    reason.className = 'why'
+    reason.textContent = why
+    var hint = document.createElement('div')
+    hint.className = 'hint'
+    hint.textContent = 'Open the exact URL MeowCode printed, token and all \u2014 a bare 127.0.0.1 address is not enough.'
+    box.append(head, reason, hint)
+    root.replaceChildren(box)
+  }
+  window.__meowuiFail = fail
+  window.addEventListener('error', function (e) {
+    fail('webui.js failed while loading: ' + (e.message || 'an unknown error'))
+  })
+})();
+</script>
+<script src="/${bundle}?t=${encodeURIComponent(token2)}" onerror="window.__meowuiFail &amp;&amp; window.__meowuiFail('webui.js could not be loaded \u2014 the server answered with an error')"></script>
 </body>
 </html>`;
   const NO_TOKEN_PAGE = `<!doctype html><meta charset="utf-8"><title>meowui</title>

@@ -27,6 +27,18 @@ window.addEventListener('error', (e) => {
   console.error(e.error ?? e.message)
 })
 
+// A rejection nothing awaited, *before* the workbench is up — there are no panes on
+// screen yet to hold a toast, and the shell's error box is the one thing on the page
+// that works without this bundle. After startup this is deliberately quiet: a toast
+// would land on a real UI, and a boot box over a working workbench would be a lie.
+//
+// It cannot double-report `main()`'s own failure, because `main().catch` at the
+// bottom handles that rejection — so it never becomes unhandled.
+window.addEventListener('unhandledrejection', (e) => {
+  if (window.__meowuiBooted) return
+  window.__meowuiFail?.(`the front-end threw: ${e.reason?.message ?? e.reason}`)
+})
+
 // ---- rendering --------------------------------------------------------------
 
 let workbenchEl = null
@@ -468,6 +480,10 @@ async function main() {
 
   await loadDir(store, '.')
   render()
+
+  // Up and visible, with the tree loaded and the editor mounted — the flag the
+  // shell's watchdog waits for, and the honest definition of "started".
+  window.__meowuiBooted = true
 
   subscribe((event) => {
     if (event.channel === 'agent') store.applyAgentEvent(event)
