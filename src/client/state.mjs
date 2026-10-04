@@ -51,6 +51,13 @@ export function createStore() {
     /** Path whose diff the editor is showing instead of its text. */
     diffView: null,
     saveNote: null,
+    /**
+     * A transport failure of the last send — 401, a 500, the host closing the
+     * bridge. Stored rather than derived because a failure that never reached the
+     * host produced no event and so left no row in the transcript; this is the
+     * only place it can be said out loud. Cleared at the head of every send.
+     */
+    error: null,
     toasts: [],
     connected: false,
   }
@@ -217,6 +224,19 @@ export function createStore() {
       const next = state[key] === 'visible' ? 'hidden' : 'visible'
       store.update({ [key]: next })
       persist(key, next)
+    },
+
+    /**
+     * Expand or collapse one directory.
+     *
+     * A copy of the Set, like every other view write: `update` is an
+     * `Object.assign` onto the state object, so a mutation in place would reach
+     * the panes without ever going through `emit`.
+     */
+    toggleDir(path) {
+      const expanded = new Set(state.expanded)
+      expanded.has(path) ? expanded.delete(path) : expanded.add(path)
+      store.update({ expanded })
     },
 
     toggleRow(id) {

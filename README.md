@@ -138,6 +138,30 @@ stdin/stdout. Two facts that are easy to get backwards, both measured:
 
 ## Testing without a browser
 
+Three files, no dependencies, run in order by `npm test`.
+
+`tools/drift-check.mjs` and `tools/boot-smoke.mjs` cover the client, which the
+simulator cannot: it drives the plugin over HTTP and never executes a line of
+front-end code, so every pane was untested. Both run against `tools/dom-stub.mjs`,
+a document small enough to build a subtree in and faithful in the two places
+where being generous would hide a bug — `className` coerces an array the way a
+real `DOMTokenList` does not, and `style` refuses expando assignment the way a
+real `CSSStyleDeclaration` does not.
+
+The drift check does not read the source to find the reads. It runs every pane
+against a real store whose state object is a `Proxy` and records what the panes
+touch, so the declared set and the read set are both runtime facts and cannot
+drift apart. `tools/boot-smoke.mjs` goes one level further: it bundles
+`main.mjs` with esbuild — the bare `monaco-editor` specifier intercepted, since
+4.9 MB of editor is not what is under test — and runs the whole bundle in a
+`node:vm` sandbox against the stub, so `main()` really does boot. Both were
+written against a real failure: `statusbar.mjs` reading a `problems` field no
+store declared, whose `.filter` is what turned a boot into a red box.
+
+Monaco is the honest limit. The stub replaces it with no-ops, so a pane that
+read `monaco.something` that does not exist would pass; nothing about Monaco's
+own DOM, its workers, or its theme validation is covered here.
+
 `tools/simulate.mjs` is 62 checks over the plugin's own HTTP surface — the same
 routes, token, SSE frames a browser would use — with the MeowCode side of the pipe
 faked. It imports nothing from meowcode's source, on purpose: a test that

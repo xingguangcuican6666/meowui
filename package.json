@@ -46,7 +46,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tools/simulate.mjs"
+    "test": "node tools/drift-check.mjs && node tools/boot-smoke.mjs && node tools/simulate.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

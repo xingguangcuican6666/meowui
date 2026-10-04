@@ -29,8 +29,17 @@ export function h(tag, props, ...children) {
     for (const [key, value] of Object.entries(props)) {
       if (value == null || value === false) continue
       if (key.startsWith('on') && typeof value === 'function') el.addEventListener(key.slice(2), value)
-      else if (key === 'class') el.className = value
-      else if (key === 'style' && typeof value === 'object') Object.assign(el.style, value)
+      else if (key === 'class') el.className = Array.isArray(value) ? value.filter(Boolean).join(' ') : value
+      else if (key === 'style' && typeof value === 'object') {
+        // A custom property is not a property of CSSStyleDeclaration, so
+        // `Object.assign(el.style, …)` writes an expando the stylesheet never
+        // reads — and silently: nothing about it throws. They have to go through
+        // setProperty or the variable simply stays at its CSS fallback.
+        for (const [prop, v] of Object.entries(value)) {
+          if (prop.startsWith('--')) el.style.setProperty(prop, v)
+          else el.style[prop] = v
+        }
+      }
       else if (key === 'dataset') Object.assign(el.dataset, value)
       else if (key in el) el[key] = value
       else el.setAttribute(key, value === true ? '' : String(value))

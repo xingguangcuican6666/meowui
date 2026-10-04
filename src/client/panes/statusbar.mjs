@@ -8,8 +8,11 @@ import { h } from '../dom.mjs'
 
 export function renderStatusBar(store, actions) {
   const state = store.get()
-  const errors = state.problems.filter((p) => p.severity === 'error').length
-  const warnings = state.problems.length - errors
+  // Derived from the transcript, exactly as the panel below it is — one list, two
+  // views, so the count in the bar cannot disagree with the rows in the panel.
+  const problems = collectProblems(state)
+  const errors = problems.filter((p) => p.severity === 'error').length
+  const warnings = problems.length - errors
   const u = state.usage
   const tokens = u ? `${formatTokens(u.inputTokens)} in · ${formatTokens(u.outputTokens)} out` : ''
 

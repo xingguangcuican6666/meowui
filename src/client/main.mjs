@@ -451,7 +451,13 @@ window.addEventListener('keydown', (e) => {
 store.on(render)
 
 async function main() {
-  Object.assign(store.get(), prefs)
+  // Preferences are the view's own persisted shape, and four of its seven keys are
+  // store fields. Written through `update` rather than `Object.assign`ed onto the
+  // state object, so the store's declared keys stay the whole truth about the
+  // shape — the three width keys below are deliberately not state at all; they are
+  // read from `prefs` directly, at render time and while dragging.
+  const { sidebar, copilot, panel, theme } = prefs
+  store.update({ sidebar, copilot, panel, theme })
   document.documentElement.dataset.theme = prefs.theme
 
   const [cwd, config, host] = await Promise.all([api.cwd(), api.config(), api.state()])

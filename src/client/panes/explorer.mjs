@@ -83,7 +83,7 @@ function renderLevel(store, actions, path, depth) {
 
     if (entry.dir) {
       rows.push(h('div.tree-row', {
-        class: [entry.ignored && 'ignored', state.selectedPath === entry.path && 'selected'],
+        class: [entry.ignored && 'ignored'],
         style: indent,
         onclick: () => toggleDir(store, entry.path),
       },
@@ -95,8 +95,12 @@ function renderLevel(store, actions, path, depth) {
       continue
     }
 
+    // The open file *is* the tree's selection: every route to a file — the tree,
+    // Ctrl+P, a tool row in the timeline, the Problems panel — goes through
+    // `openFile`, and every one of them sets `activeTab`. A second field for it
+    // would be a second thing to keep in step.
     rows.push(h('div.tree-row', {
-      class: [state.selectedPath === entry.path && 'selected'],
+      class: [state.activeTab === entry.path && 'selected'],
       style: indent,
       onclick: () => actions.openFile(entry.path),
       title: entry.path,
