@@ -101,11 +101,67 @@ log('workbench:', url)
 const watcher = watchWorkspace(cwd, (changed) => api.broadcast({ channel: 'fs', changed }))
 
 // Best-effort convenience: a terminal user gets the page without copy-pasting.
-// Never fatal, and never waited on — a machine with no browser just skips it.
-if (process.env.MEOWUI_OPEN !== '0') {
-  try {
-    spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref()
-  } catch { /* no desktop environment; the URL is on stderr */ }
+// The call itself is at the bottom of this file — see the note there.
+
+/**
+ * Open the workbench in a browser, or stay quiet about it.
+ *
+ * Two things make this sharper than it looks.
+ *
+ * A `spawn` that finds no binary does NOT throw: it returns a ChildProcess and
+ * then emits `error` asynchronously. So the obvious `try { spawn(...) } catch {}`
+ * handles the case that cannot happen and misses the one that does — the unhandled
+ * `error` event then takes the whole process down, HTTP service and all, over a
+ * convenience that was never required. The failure has to be caught on the event.
+ *
+ * And one candidate is not enough: `xdg-open` is the documented one and is absent
+ * on plenty of healthy machines, while `gio` is right there. So the candidates are
+ * tried in turn, each one's absence silent, and only the exhausted list is worth a
+ * line — "no xdg-open, no gio" is noise, "nothing can open a browser here" is the
+ * fact. MEOWUI_BROWSER replaces the list with a single command of your own.
+ */
+const BROWSERS = [
+  ['xdg-open', []],
+  ['gio', ['open']],
+  ['gnome-open', []],
+  ['kde-open', []],
+  ['wslview', []],
+  ['open', []],
+]
+
+async function openInBrowser(target) {
+  if (process.env.MEOWUI_OPEN === '0') return
+  const candidates = process.env.MEOWUI_BROWSER ? [[process.env.MEOWUI_BROWSER, []]] : BROWSERS
+  for (const [command, prefix] of candidates) {
+    if (await tryOpen(command, [...prefix, target])) return
+  }
+  log('no browser here — open the URL above by hand')
+}
+
+/**
+ * One launch attempt, as a question: did this command exist and start?
+ *
+ * `spawn` throws only for malformed arguments; "no such binary" arrives later as
+ * an `error` event. So the answer is the absence of that event within a short
+ * grace period — long enough for a failed exec to report, short enough that a
+ * real browser has already been handed the URL. Exiting non-zero (a `gio open`
+ * with no display) is indistinguishable from success from out here, which is fine:
+ * the URL is on stderr either way, so the notice is a nicety and not a guarantee.
+ */
+function tryOpen(command, args) {
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn(command, args, { stdio: 'ignore', detached: true })
+    } catch {
+      resolve(false)
+      return
+    }
+    const grace = setTimeout(() => { child.unref(); resolve(true) }, 400)
+    // Clearing the timer matters: a late `error` after we resolved would be an
+    // unhandled event, which is the very thing this function exists to prevent.
+    child.on('error', () => { clearTimeout(grace); resolve(false) })
+  })
 }
 
 // Exiting is the user's call, not the browser's: they close the terminal (or
@@ -114,6 +170,14 @@ if (process.env.MEOWUI_OPEN !== '0') {
 process.stdin.on('end', () => { log('host closed the bridge'); shutdown(0) })
 process.on('SIGINT', () => shutdown(0))
 process.on('SIGTERM', () => shutdown(0))
+
+// Last, and deliberately so: `openInBrowser` reads BROWSERS, and an async body
+// runs synchronously up to its first await, so calling it above that `const` hit
+// it in its temporal dead zone. The ReferenceError was swallowed by the `.catch`
+// and the "no browser here" notice silently never printed — which is how the
+// first version of this fix shipped still broken, and why the notice is now
+// asserted by a test that runs with no browser opener on PATH at all.
+openInBrowser(url).catch((e) => log(`could not open a browser: ${e?.message ?? e}`))
 
 let closing = false
 function shutdown(code) {

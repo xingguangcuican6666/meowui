@@ -14,8 +14,10 @@
 // them wrongly fails here rather than in front of a user.
 
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -50,9 +52,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 // The token is minted by the plugin on first run and printed in its workbench URL
 // on stderr, so the simulator reads it out of the child's stderr — exactly where a
 // human would read it.
-function makeClient(token) {
+function makeClient(token, base = BASE) {
   const get = (route) => new Promise((resolve, reject) => {
-    const url = new URL(route, BASE)
+    const url = new URL(route, base)
     url.searchParams.set('t', token)
     http.get(url, (res) => {
       let body = ''
@@ -115,6 +117,15 @@ function collectEvents(token, { until, timeoutMs = 15_000, after = 0 } = {}) {
   })
 }
 
+// A PATH that is real enough to run node but holds no browser opener at all —
+// which is every headless machine, and is the only honest way to reproduce the
+// "spawn xdg-open ENOENT" crash. An assertion that a flag disables the feature
+// cannot prove the feature survives its absence. node is linked in beside it, so
+// a PATH that is broken outright would be a test passing for the wrong reason.
+const NO_BROWSER_BIN = fs.mkdtempSync(path.join(os.tmpdir(), 'meowui-no-browser-'))
+fs.symlinkSync(process.execPath, path.join(NO_BROWSER_BIN, 'node'))
+const PATH_WITHOUT_OPENERS = NO_BROWSER_BIN
+
 // ---- the fake MeowCode host, on the other end of the plugin's stdio ----------
 
 /**
@@ -127,7 +138,7 @@ function collectEvents(token, { until, timeoutMs = 15_000, after = 0 } = {}) {
  * `chunkMs` is what makes `agent/abort` testable. A real turn finishes in
  * milliseconds; with 120ms between events there is a window to interrupt.
  */
-function startFakeHost({ workspace, chunkMs = 120 } = {}) {
+function startFakeHost({ workspace, chunkMs = 120, env = {}, port = PORT } = {}) {
   const messages = []
   let controller = null
   let hostId = 1
@@ -229,11 +240,17 @@ function startFakeHost({ workspace, chunkMs = 120 } = {}) {
   // argv[2] from the source tree, which the real entry never does.
   const child = spawn(process.execPath, [PLUGIN], {
     cwd: workspace,
-    env: { ...process.env, MEOWUI_PORT: String(PORT), MEOWUI_OPEN: '0' },
+    env: { ...process.env, MEOWUI_PORT: String(port), MEOWUI_OPEN: '0', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 
   const toPlugin = (msg) => { if (!child.stdin.destroyed) child.stdin.write(JSON.stringify(msg) + '\n') }
+
+  // Collected for the whole life of the child, not just until `ready` resolves:
+  // the browser-launch notice arrives *after* the URL is printed, so a buffer that
+  // stopped at the handshake could never see it.
+  let err = ''
+  child.stderr.on('data', (c) => { err += c; process.stderr.write(c) })
 
   let buf = ''
   child.stdout.on('data', (chunk) => {
@@ -260,17 +277,19 @@ function startFakeHost({ workspace, chunkMs = 120 } = {}) {
     // only after the handshake. Waiting for the URL on stderr is the honest sync
     // point — it is exactly when a human would see it.
     ready: new Promise((resolve, reject) => {
-      let err = ''
       const timer = setTimeout(() => reject(new Error('the plugin never printed a workbench URL\n' + err)), 20_000)
-      child.stderr.on('data', (c) => {
-        err += c
-        process.stderr.write(c)
+      const settle = setInterval(() => {
         const m = /workbench: (\S+)/.exec(err)
-        if (m) { clearTimeout(timer); resolve(m[1]) }
+        if (m) { clearInterval(settle); clearTimeout(timer); resolve(m[1]) }
+      }, 25)
+      child.on('exit', (code) => {
+        clearInterval(settle)
+        clearTimeout(timer)
+        reject(new Error(`the plugin exited with ${code}\n${err}`))
       })
-      child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`the plugin exited with ${code}\n${err}`)) })
     }),
     stop() { child.stdin.end(); child.kill() },
+    stderr() { return err },
   }
 }
 
@@ -459,6 +478,41 @@ async function main() {
   check('a write in the workspace is announced on the stream', Array.isArray(fsEvent?.changed), JSON.stringify(fsEvent))
   check('the announced path is workspace-relative', fsEvent?.changed?.some((p) => p.endsWith('watch-probe.txt')), JSON.stringify(fsEvent?.changed))
   await fsp.rm(path.join(WORKSPACE, 'watch-probe.txt'), { force: true })
+
+  // ---- opening a browser ------------------------------------------------
+  // The launcher must treat this as a convenience it can lose, not as something
+  // that takes the service down with it. It is checked by *not* disabling it, on
+  // a PATH with no browser opener at all — the situation on any headless box.
+  // The launcher takes a PATH here rather than a flag precisely because that is
+  // the only way to make "no xdg-open anywhere" true on a machine that has one.
+  section('opening a browser')
+  const browserless = await startFakeHost({
+    workspace: WORKSPACE,
+    env: { MEOWUI_OPEN: '1', PATH: PATH_WITHOUT_OPENERS },
+    port: PORT + 1,
+  })
+  try {
+    const url = await browserless.ready
+    const token = new URL(url).searchParams.get('t')
+    // Give the candidate list time to be exhausted before asking whether the
+    // process is still there: the first spawn attempt fails in single-digit ms.
+    await sleep(1200)
+    const alive = browserless.child.exitCode === null && browserless.child.signalCode === null
+    check('a missing browser opener does not take the service down', alive,
+      `exit ${browserless.child.exitCode ?? browserless.child.signalCode}: ${browserless.stderr()}`)
+    check('it says so on stderr instead of failing silently',
+      /no browser here/.test(browserless.stderr()), JSON.stringify(browserless.stderr()))
+    const served = await makeClient(token, `http://127.0.0.1:${PORT + 1}`).get('/api/cwd')
+    check('and the workbench is still serving', served.status === 200 && served.json?.cwd === WORKSPACE,
+      `status ${served.status}`)
+    // No ⚠ row, no unhandled rejection, no stack: the notice is a sentence.
+    check('the notice is one line, not a stack trace',
+      !/at ChildProcess|at process\.|Unhandled|^\s+at /m.test(browserless.stderr()),
+      JSON.stringify(browserless.stderr()))
+  } finally {
+    browserless.stop()
+    await waitForClose(PORT + 1, 5000)
+  }
 
   // ---- teardown -------------------------------------------------------
   section('shutdown')

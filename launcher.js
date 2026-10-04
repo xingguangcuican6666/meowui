@@ -562,11 +562,40 @@ try {
 var url = api.url(token.value);
 log("workbench:", url);
 var watcher = watchWorkspace(cwd, (changed) => api.broadcast({ channel: "fs", changed }));
-if (process.env.MEOWUI_OPEN !== "0") {
-  try {
-    spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref();
-  } catch {
+var BROWSERS = [
+  ["xdg-open", []],
+  ["gio", ["open"]],
+  ["gnome-open", []],
+  ["kde-open", []],
+  ["wslview", []],
+  ["open", []]
+];
+async function openInBrowser(target) {
+  if (process.env.MEOWUI_OPEN === "0") return;
+  const candidates = process.env.MEOWUI_BROWSER ? [[process.env.MEOWUI_BROWSER, []]] : BROWSERS;
+  for (const [command, prefix] of candidates) {
+    if (await tryOpen(command, [...prefix, target])) return;
   }
+  log("no browser here \u2014 open the URL above by hand");
+}
+function tryOpen(command, args) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(command, args, { stdio: "ignore", detached: true });
+    } catch {
+      resolve(false);
+      return;
+    }
+    const grace = setTimeout(() => {
+      child.unref();
+      resolve(true);
+    }, 400);
+    child.on("error", () => {
+      clearTimeout(grace);
+      resolve(false);
+    });
+  });
 }
 process.stdin.on("end", () => {
   log("host closed the bridge");
@@ -574,6 +603,7 @@ process.stdin.on("end", () => {
 });
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
+openInBrowser(url).catch((e) => log(`could not open a browser: ${e?.message ?? e}`));
 var closing = false;
 function shutdown(code) {
   if (closing) return;

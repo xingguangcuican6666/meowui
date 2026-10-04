@@ -103,6 +103,22 @@ read the workspace can also drive the agent. So:
 The API key never crosses the bridge — `config/get` strips it — and the
 autosaved session file stores the config without it.
 
+## Environment
+
+| variable | effect |
+|---|---|
+| `MEOWUI_PORT` | listen port (default 4711, loopback only, single instance) |
+| `MEOWUI_OPEN=0` | do not try to open a browser |
+| `MEOWUI_BROWSER` | one command to open the workbench with, instead of the built-in list |
+
+Opening a browser is a convenience, never a requirement — a headless machine has
+no `xdg-open`, and that must not take the service down. The launcher tries
+`xdg-open`, `gio open`, `gnome-open`, `kde-open`, `wslview` and `open` in turn,
+and says one line on stderr if none of them exists. It does not matter whether a
+particular opener actually displayed anything (a `gio open` with no display exits
+non-zero, indistinguishable from success from out here) — the URL is always on
+stderr, so the notice is a nicety rather than a promise.
+
 ## How it talks to MeowCode
 
 The plugin is the JSON-RPC **client**, MeowCode the server, over the child's
